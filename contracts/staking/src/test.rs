@@ -75,10 +75,10 @@ fn test_initialize() {
 
     // Duplicate initialisation must fail.
     let result = client.try_initialize(&admin, &stake_token, &reward_token, &10, &86_400);
-    assert_eq!(
-        result.unwrap_err().unwrap(),
-        ContractError::AlreadyInitialized
-    );
+    match result {
+        Err(Ok(e)) => assert_eq!(e, ContractError::AlreadyInitialized),
+        _ => unreachable!("Expected AlreadyInitialized error"),
+    }
 }
 
 // ── Staking ───────────────────────────────────────────────────────────────────
@@ -104,7 +104,10 @@ fn test_stake_zero_fails() {
     mint_stake(&env, &stake_token, &staker, 1_000);
 
     let result = client.try_stake(&staker, &0);
-    assert_eq!(result.unwrap_err().unwrap(), ContractError::InvalidInput);
+    match result {
+        Err(Ok(e)) => assert_eq!(e, ContractError::InvalidInput),
+        _ => unreachable!("Expected InvalidInput error"),
+    }
 }
 
 #[test]
@@ -115,7 +118,10 @@ fn test_stake_negative_fails() {
     mint_stake(&env, &stake_token, &staker, 1_000);
 
     let result = client.try_stake(&staker, &-1);
-    assert_eq!(result.unwrap_err().unwrap(), ContractError::InvalidInput);
+    match result {
+        Err(Ok(e)) => assert_eq!(e, ContractError::InvalidInput),
+        _ => unreachable!("Expected InvalidInput error"),
+    }
 }
 
 // ── Reward accrual ────────────────────────────────────────────────────────────
@@ -264,10 +270,10 @@ fn test_withdraw_before_timelock_fails() {
     // Still inside the lock window.
     env.ledger().set_timestamp(3_600); // only 1 hour in
     let result = client.try_withdraw(&staker, &request_id);
-    assert_eq!(
-        result.unwrap_err().unwrap(),
-        ContractError::TimelockNotExpired
-    );
+    match result {
+        Err(Ok(e)) => assert_eq!(e, ContractError::TimelockNotExpired),
+        _ => unreachable!("Expected TimelockNotExpired error"),
+    }
 }
 
 #[test]
@@ -312,10 +318,10 @@ fn test_double_withdraw_fails() {
     client.withdraw(&staker, &request_id);
 
     let result = client.try_withdraw(&staker, &request_id);
-    assert_eq!(
-        result.unwrap_err().unwrap(),
-        ContractError::AlreadyWithdrawn
-    );
+    match result {
+        Err(Ok(e)) => assert_eq!(e, ContractError::AlreadyWithdrawn),
+        _ => unreachable!("Expected AlreadyInitialized error"),
+    }
 }
 
 #[test]
@@ -329,10 +335,10 @@ fn test_unstake_more_than_staked_fails() {
     client.stake(&staker, &500);
 
     let result = client.try_request_unstake(&staker, &1_000);
-    assert_eq!(
-        result.unwrap_err().unwrap(),
-        ContractError::InsufficientBalance
-    );
+    match result {
+        Err(Ok(e)) => assert_eq!(e, ContractError::InsufficientBalance),
+        _ => unreachable!("Expected InsufficientBalance error"),
+    }
 }
 
 // ── Admin ─────────────────────────────────────────────────────────────────────
@@ -365,7 +371,10 @@ fn test_set_reward_rate_by_non_admin_fails() {
 
     let intruder = Address::generate(&env);
     let result = client.try_set_reward_rate(&intruder, &999);
-    assert_eq!(result.unwrap_err().unwrap(), ContractError::Unauthorized);
+    match result {
+        Err(Ok(e)) => assert_eq!(e, ContractError::Unauthorized),
+        _ => unreachable!("Expected Unauthorized error"),
+    }
 }
 
 #[test]
