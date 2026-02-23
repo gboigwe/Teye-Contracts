@@ -193,3 +193,175 @@ fn test_role_delegation_expiration() {
     );
     assert!(result.is_err());
 }
+
+// ====================== Delegation-only & edge case tests ======================
+
+#[test]
+fn test_delegation_only_permission() {
+    // User with no useful direct permissions can act through a delegation
+    let (env, client, admin) = setup_test();
+
+    let delegatee = Address::generate(&env);
+    client.register_user(
+        &admin,
+        &delegatee,
+        &Role::Patient,
+        &String::from_str(&env, "Delegatee"),
+    );
+
+    // Patient has no ManageUsers permission directly
+    assert!(!client.check_permission(&delegatee, &Permission::ManageUsers));
+    assert!(!client.check_permission(&delegatee, &Permission::WriteRecord));
+
+    // Admin delegates Optometrist role (has ManageUsers, WriteRecord) to delegatee
+    let future = env.ledger().timestamp() + 86400;
+    client.delegate_role(&admin, &delegatee, &Role::Optometrist, &future);
+
+    // Delegatee now has permissions through the delegation
+    assert!(client.check_permission(&delegatee, &Permission::ManageUsers));
+    assert!(client.check_permission(&delegatee, &Permission::WriteRecord));
+
+    // But still no SystemAdmin (Optometrist role doesn't include it)
+    assert!(!client.check_permission(&delegatee, &Permission::SystemAdmin));
+}
+
+#[test]
+fn test_delegation_only_can_register_user() {
+    // User with only a delegation that grants ManageUsers can call register_user
+    let (env, client, admin) = setup_test();
+
+    let delegatee = Address::generate(&env);
+    client.register_user(
+        &admin,
+        &delegatee,
+        &Role::Patient,
+        &String::from_str(&env, "Delegatee"),
+    );
+
+    // Delegate Staff role (has ManageUsers) from admin to delegatee
+    let future = env.ledger().timestamp() + 86400;
+    client.delegate_role(&admin, &delegatee, &Role::Staff, &future);
+
+    // Delegatee can now register a new user through delegated ManageUsers
+    let new_user = Address::generate(&env);
+    client.register_user(
+        &delegatee,
+        &new_user,
+        &Role::Patient,
+        &String::from_str(&env, "NewUser"),
+    );
+
+    let user_data = client.get_user(&new_user);
+    assert_eq!(user_data.role, Role::Patient);
+}
+
+#[test]
+fn test_expired_assignment_active_delegation() {
+    // User's direct assignment expired, but active delegation still grants permission
+    let (env, client, admin) = setup_test();
+
+    let contract_id = env.register(VisionRecordsContract, ());
+
+    let user = Address::generate(&env);
+    client.register_user(
+        &admin,
+        &user,
+        &Role::Patient,
+        &String::from_str(&env, "User"),
+    );
+
+    // Overwrite user's assignment with one that expires at timestamp 50
+    env.as_contract(&contract_id, || {
+        crate::rbac::assign_role(&env, user.clone(), Role::Staff, 50);
+    });
+
+    // At timestamp 0, Staff assignment is active → has ManageUsers
+    assert!(client.check_permission(&user, &Permission::ManageUsers));
+
+    // Delegate Optometrist role from admin (has WriteRecord) to user
+    client.delegate_role(&admin, &user, &Role::Optometrist, &0);
+
+    // Advance time past the assignment expiry
+    env.ledger().set_timestamp(100);
+
+    // Direct Staff assignment has expired → no direct ManageUsers
+    // But delegation (expires_at=0, never expires) grants WriteRecord
+    assert!(client.check_permission(&user, &Permission::WriteRecord));
+    assert!(client.check_permission(&user, &Permission::ManageUsers));
+}
+
+#[test]
+fn test_revoked_permission_blocks_delegation() {
+    // Explicit revoke on direct assignment blocks delegation for that permission
+    let (env, client, admin) = setup_test();
+
+    let user = Address::generate(&env);
+    client.register_user(
+        &admin,
+        &user,
+        &Role::Optometrist,
+        &String::from_str(&env, "Opto"),
+    );
+
+    // Optometrist has ManageUsers through base role
+    assert!(client.check_permission(&user, &Permission::ManageUsers));
+
+    // Admin explicitly revokes ManageUsers from this user
+    client.revoke_custom_permission(&admin, &user, &Permission::ManageUsers);
+    assert!(!client.check_permission(&user, &Permission::ManageUsers));
+
+    // Another admin delegates Admin role (has ManageUsers) to this user
+    let future = env.ledger().timestamp() + 86400;
+    client.delegate_role(&admin, &user, &Role::Admin, &future);
+
+    // Revoke still blocks ManageUsers even though delegation would grant it.
+    // This prevents circumventing explicit admin revocations.
+    assert!(!client.check_permission(&user, &Permission::ManageUsers));
+
+    // Other non-revoked permissions still work through either path
+    assert!(client.check_permission(&user, &Permission::WriteRecord));
+}
+
+#[test]
+fn test_multiple_delegations_evaluated() {
+    // User with delegations from multiple delegators
+    let (env, client, admin) = setup_test();
+
+    let user = Address::generate(&env);
+    client.register_user(
+        &admin,
+        &user,
+        &Role::Patient,
+        &String::from_str(&env, "User"),
+    );
+
+    let delegator1 = Address::generate(&env);
+    let delegator2 = Address::generate(&env);
+    client.register_user(
+        &admin,
+        &delegator1,
+        &Role::Patient,
+        &String::from_str(&env, "Del1"),
+    );
+    client.register_user(
+        &admin,
+        &delegator2,
+        &Role::Patient,
+        &String::from_str(&env, "Del2"),
+    );
+
+    // delegator1 delegates Staff role (ManageUsers only, no WriteRecord)
+    let future = env.ledger().timestamp() + 86400;
+    client.delegate_role(&delegator1, &user, &Role::Staff, &future);
+
+    // User has ManageUsers but not WriteRecord
+    assert!(client.check_permission(&user, &Permission::ManageUsers));
+    assert!(!client.check_permission(&user, &Permission::WriteRecord));
+
+    // delegator2 delegates Optometrist role (ManageUsers + WriteRecord)
+    client.delegate_role(&delegator2, &user, &Role::Optometrist, &future);
+
+    // Now user has both through combined delegations
+    assert!(client.check_permission(&user, &Permission::ManageUsers));
+    assert!(client.check_permission(&user, &Permission::WriteRecord));
+}
