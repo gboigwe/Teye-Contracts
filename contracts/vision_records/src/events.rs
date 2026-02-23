@@ -204,6 +204,42 @@ pub fn publish_provider_updated(env: &Env, provider: Address) {
     env.events().publish(topics, data);
 }
 
+/// Event published when access is granted via meta-transaction.
+#[soroban_sdk::contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MetaAccessGrantedEvent {
+    pub patient: Address,
+    pub grantee: Address,
+    pub level: AccessLevel,
+    pub relayer: Address,
+    pub expires_at: u64,
+    pub nonce: u64,
+    pub timestamp: u64,
+}
+
+/// Publishes an event when access is granted via meta-transaction.
+pub fn publish_meta_access_granted(
+    env: &Env,
+    patient: Address,
+    grantee: Address,
+    level: AccessLevel,
+    relayer: Address,
+    expires_at: u64,
+    nonce: u64,
+) {
+    let topics = (symbol_short!("META_GRT"), patient.clone(), grantee.clone());
+    let data = MetaAccessGrantedEvent {
+        patient,
+        grantee,
+        level,
+        relayer,
+        expires_at,
+        nonce,
+        timestamp: env.ledger().timestamp(),
+    };
+    env.events().publish(topics, data);
+}
+
 /// Publishes an error event for monitoring and indexing.
 /// This event includes error code, category, severity, message, user, resource ID, retryable flag, and timestamp.
 pub fn publish_error(env: &Env, error_code: u32, context: ErrorContext) {
