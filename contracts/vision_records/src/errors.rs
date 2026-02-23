@@ -102,6 +102,8 @@ pub enum ContractError {
     ContractPaused = 23,
     InsufficientPermissions = 24,
     TransientFailure = 25,
+    ConsentRequired = 26,
+    ConsentExpired = 27,
 }
 
 impl ContractError {
@@ -122,7 +124,9 @@ impl ContractError {
             ContractError::Unauthorized
             | ContractError::AccessDenied
             | ContractError::InsufficientPermissions
-            | ContractError::ExpiredAccess => ErrorCategory::Authorization,
+            | ContractError::ExpiredAccess
+            | ContractError::ConsentRequired
+            | ContractError::ConsentExpired => ErrorCategory::Authorization,
             ContractError::UserNotFound
             | ContractError::RecordNotFound
             | ContractError::ProviderNotFound => ErrorCategory::NotFound,
@@ -161,7 +165,9 @@ impl ContractError {
             | ContractError::ExpiredAccess
             | ContractError::ProviderAlreadyRegistered
             | ContractError::DelegationExpired
-            | ContractError::RateLimitExceeded => ErrorSeverity::Medium,
+            | ContractError::RateLimitExceeded
+            | ContractError::ConsentRequired
+            | ContractError::ConsentExpired => ErrorSeverity::Medium,
             ContractError::StorageError | ContractError::TransientFailure => ErrorSeverity::High,
             ContractError::Paused | ContractError::ContractPaused => ErrorSeverity::Critical,
         }
@@ -207,6 +213,8 @@ impl ContractError {
             ContractError::ContractPaused => "Contract is paused",
             ContractError::InsufficientPermissions => "Insufficient permissions for operation",
             ContractError::TransientFailure => "Transient failure, operation may succeed on retry",
+            ContractError::ConsentRequired => "Patient consent required for access",
+            ContractError::ConsentExpired => "Patient consent has expired",
         }
     }
 }
