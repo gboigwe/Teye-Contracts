@@ -204,6 +204,56 @@ pub fn publish_provider_updated(env: &Env, provider: Address) {
     env.events().publish(topics, data);
 }
 
+/// Event published when consent is granted by a patient.
+#[soroban_sdk::contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConsentGrantedEvent {
+    pub patient: Address,
+    pub grantee: Address,
+    pub consent_type: crate::ConsentType,
+    pub expires_at: u64,
+    pub timestamp: u64,
+}
+
+/// Event published when consent is revoked by a patient.
+#[soroban_sdk::contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConsentRevokedEvent {
+    pub patient: Address,
+    pub grantee: Address,
+    pub timestamp: u64,
+}
+
+/// Publishes an event when consent is granted.
+pub fn publish_consent_granted(
+    env: &Env,
+    patient: Address,
+    grantee: Address,
+    consent_type: crate::ConsentType,
+    expires_at: u64,
+) {
+    let topics = (symbol_short!("CST_GRT"), patient.clone(), grantee.clone());
+    let data = ConsentGrantedEvent {
+        patient,
+        grantee,
+        consent_type,
+        expires_at,
+        timestamp: env.ledger().timestamp(),
+    };
+    env.events().publish(topics, data);
+}
+
+/// Publishes an event when consent is revoked.
+pub fn publish_consent_revoked(env: &Env, patient: Address, grantee: Address) {
+    let topics = (symbol_short!("CST_REV"), patient.clone(), grantee.clone());
+    let data = ConsentRevokedEvent {
+        patient,
+        grantee,
+        timestamp: env.ledger().timestamp(),
+    };
+    env.events().publish(topics, data);
+}
+
 /// Publishes an error event for monitoring and indexing.
 /// This event includes error code, category, severity, message, user, resource ID, retryable flag, and timestamp.
 pub fn publish_error(env: &Env, error_code: u32, context: ErrorContext) {
