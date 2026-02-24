@@ -24,6 +24,7 @@ pub mod multisig;
 pub mod rate_limit;
 pub mod whitelist;
 
+pub use admin_tiers::*;
 #[cfg(feature = "std")]
 pub use consent::*;
 #[cfg(feature = "std")]
