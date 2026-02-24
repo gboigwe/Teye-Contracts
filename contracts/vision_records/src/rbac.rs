@@ -1,4 +1,4 @@
-use soroban_sdk::{contracttype, symbol_short, Address, Env, Vec};
+use soroban_sdk::{contracttype, symbol_short, Address, Env, String, Symbol, Vec};
 
 const TTL_THRESHOLD: u32 = 5184000;
 const TTL_EXTEND_TO: u32 = 10368000;
@@ -63,6 +63,14 @@ pub fn get_base_permissions(env: &Env, role: &Role) -> Vec<Permission> {
     perms
 }
 
+/// Represents an ACL Group with a set of permissions
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct AclGroup {
+    pub name: String,
+    pub permissions: Vec<Permission>,
+}
+
 /// Represents an assigned role with specific custom grants or revocations
 #[contracttype]
 #[derive(Clone, Debug)]
@@ -91,7 +99,7 @@ pub fn user_assignment_key(user: &Address) -> (soroban_sdk::Symbol, Address) {
 pub fn delegation_key(
     delegator: &Address,
     delegatee: &Address,
-) -> (soroban_sdk::Symbol, Address, Address) {
+) -> (Symbol, Address, Address) {
     (
         symbol_short!("DELEGATE"),
         delegator.clone(),
@@ -99,10 +107,12 @@ pub fn delegation_key(
     )
 }
 
-/// Storage key for the delegation index: maps a delegatee to their list of delegators.
-/// Used by `has_permission` to discover all active delegations for a user.
-fn delegatee_index_key(delegatee: &Address) -> (soroban_sdk::Symbol, Address) {
-    (symbol_short!("DEL_IDX"), delegatee.clone())
+pub fn acl_group_key(name: &String) -> (Symbol, String) {
+    (symbol_short!("ACL_GRP"), name.clone())
+}
+
+pub fn user_groups_key(user: &Address) -> (Symbol, Address) {
+    (symbol_short!("USR_GRPS"), user.clone())
 }
 
 // ======================== Core RBAC Engine ========================
@@ -241,25 +251,79 @@ pub fn get_active_delegation(
     None
 }
 
-/// Evaluates if a specified `user` holds a `permission` through any path.
-///
-/// This unified function checks both direct role assignments and delegated
-/// roles in a single call. Evaluation order:
-///
-/// 1. **Direct assignment** — custom revokes → custom grants → base role perms
-/// 2. **Delegated roles** — iterate all active delegations for this user
-///
-/// Edge cases:
-/// - **Explicit revoke blocks delegations**: If the user's active direct
-///   assignment has a custom revoke for this permission, the function returns
-///   false immediately. Delegations are NOT checked. This prevents users from
-///   circumventing an admin's explicit revocation through delegations.
-/// - **No direct assignment**: If the user has no assignment (or it expired),
-///   delegations are still evaluated. An expired assignment does not block
-///   delegation-based permissions.
-/// - **Expired delegations**: Silently skipped during iteration.
-///
-/// Complexity: O(g + d) where g = custom grants/revokes, d = active delegators.
+// ======================== ACL Group Management ========================
+
+pub fn create_group(env: &Env, name: String, permissions: Vec<Permission>) {
+    let group = AclGroup {
+        name: name.clone(),
+        permissions,
+    };
+    env.storage()
+        .persistent()
+        .set(&acl_group_key(&name), &group);
+}
+
+pub fn delete_group(env: &Env, name: String) {
+    env.storage().persistent().remove(&acl_group_key(&name));
+}
+
+pub fn add_to_group(env: &Env, user: Address, group_name: String) -> Result<(), ()> {
+    // Verify group exists
+    if !env.storage()
+        .persistent()
+        .has(&acl_group_key(&group_name))
+    {
+        return Err(());
+    }
+
+    let mut groups: Vec<String> = env
+        .storage()
+        .persistent()
+        .get(&user_groups_key(&user))
+        .unwrap_or(Vec::new(env));
+
+    if !groups.contains(&group_name) {
+        groups.push_back(group_name);
+        env.storage()
+            .persistent()
+            .set(&user_groups_key(&user), &groups);
+    }
+    Ok(())
+}
+
+pub fn remove_from_group(env: &Env, user: Address, group_name: String) {
+    let groups: Vec<String> = env
+        .storage()
+        .persistent()
+        .get(&user_groups_key(&user))
+        .unwrap_or(Vec::new(env));
+
+    let mut new_groups = Vec::new(env);
+    for g in groups.iter() {
+        if g != group_name {
+            new_groups.push_back(g);
+        }
+    }
+    env.storage()
+        .persistent()
+        .set(&user_groups_key(&user), &new_groups);
+}
+
+pub fn get_group_permissions(env: &Env, name: &String) -> Vec<Permission> {
+    if let Some(group) = env
+        .storage()
+        .persistent()
+        .get::<_, AclGroup>(&acl_group_key(name))
+    {
+        group.permissions
+    } else {
+        Vec::new(env)
+    }
+}
+
+/// Evaluates if a specified `user` holds a `permission`.
+/// This function merges Base Role inherited permissions, Custom Grants, Custom Revokes,
+/// and currently active delegated Roles.
 pub fn has_permission(env: &Env, user: &Address, permission: &Permission) -> bool {
     // Step 1: Check direct role assignment
     if let Some(assignment) = get_active_assignment(env, user) {
@@ -280,22 +344,16 @@ pub fn has_permission(env: &Env, user: &Address, permission: &Permission) -> boo
         }
     }
 
-    // Step 2: No direct permission found — check delegated roles.
-    // Users with no assignment (or expired) can still act through
-    // active delegations from other users.
-    let idx_key = delegatee_index_key(user);
-    if let Some(delegators) = env
+    // 2. Check group-based permissions
+    let user_groups: Vec<String> = env
         .storage()
         .persistent()
-        .get::<_, Vec<Address>>(&idx_key)
-    {
-        for delegator in delegators.iter() {
-            // Expired or missing delegations return None and are skipped
-            if let Some(del) = get_active_delegation(env, &delegator, user) {
-                if get_base_permissions(env, &del.role).contains(permission) {
-                    return true;
-                }
-            }
+        .get(&user_groups_key(user))
+        .unwrap_or(Vec::new(env));
+
+    for group_name in user_groups.iter() {
+        if get_group_permissions(env, &group_name).contains(permission) {
+            return true;
         }
     }
 
