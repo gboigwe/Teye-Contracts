@@ -16,13 +16,14 @@
 mod audit;
 pub mod events;
 mod helpers;
-mod verifier;
+pub mod verifier;
 pub mod vk;
 
 pub use crate::audit::{AuditRecord, AuditTrail};
 pub use crate::events::AccessRejectedEvent;
 pub use crate::helpers::ZkAccessHelper;
-pub use crate::verifier::{Bn254Verifier, PoseidonHasher, Proof, VerificationKey};
+pub use crate::verifier::{Bn254Verifier, PoseidonHasher, Proof, ProofValidationError};
+pub use crate::vk::VerificationKey;
 
 use common::whitelist;
 use soroban_sdk::{
@@ -35,7 +36,6 @@ const ADMIN: Symbol = symbol_short!("ADMIN");
 const PENDING_ADMIN: Symbol = symbol_short!("PEND_ADM");
 const RATE_CFG: Symbol = symbol_short!("RATECFG");
 const RATE_TRACK: Symbol = symbol_short!("RLTRK");
-const VK: Symbol = symbol_short!("VK");
 
 
 /// Maximum number of public inputs accepted per proof verification.
@@ -254,23 +254,6 @@ impl ZkVerifierContract {
 
         Ok(())
     }
-
-    /// Set the ZK verification key.
-    pub fn set_verification_key(
-        env: Env,
-        caller: Address,
-        vk: vk::VerificationKey,
-    ) -> Result<(), ContractError> {
-        Self::require_admin(&env, &caller)?;
-        env.storage().instance().set(&VK, &vk);
-        Ok(())
-    }
-
-    /// Get the ZK verification key.
-    pub fn get_verification_key(env: Env) -> Option<vk::VerificationKey> {
-        env.storage().instance().get(&VK)
-    }
-
     /// Return the current rate limiting configuration, if any.
     pub fn get_rate_limit_config(env: Env) -> Option<(u64, u64)> {
         env.storage().instance().get(&RATE_CFG)

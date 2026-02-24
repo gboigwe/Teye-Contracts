@@ -28,6 +28,7 @@ pub mod whitelist;
 pub use admin_tiers::*;
 #[cfg(feature = "std")]
 pub use consent::*;
+#[cfg(feature = "std")]
 pub use keys::*;
 pub use meta_tx::*;
 #[cfg(feature = "std")]
