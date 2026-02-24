@@ -13,10 +13,10 @@ members = [
     "contracts/cross_chain",
     "contracts/analytics",
     "contracts/treasury",
+    "contracts/emr_bridge",
 ]
 
 [workspace.package]
-version = "1.0.0"
 version = "1.2.2"
 authors = ["Stellar-Teye Contributors"]
 license = "MIT"
