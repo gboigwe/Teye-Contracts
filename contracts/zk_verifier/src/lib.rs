@@ -1,3 +1,4 @@
+#![allow(dead_code, clippy::manual_inspect)]
 //! # ZK Verifier Module
 //!
 //! This module provides a Zero-Knowledge (ZK) proof verification system for the Soroban ecosystem.
