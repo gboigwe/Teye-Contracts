@@ -33,22 +33,17 @@ pub use crate::selective_disclosure::SelectiveDisclosureVerifier;
 pub use crate::verifier::{Bn254Verifier, PoseidonHasher, Proof, ProofValidationError};
 pub use crate::vk::VerificationKey;
 
-use common::credential_types::{
-    BatchVerificationResult, ChainedIssuanceRequest, Credential, CredentialContractError,
-    CredentialPresentation, CredentialSchema, CredentialStatus, RevocationRegistry,
-    RevocationWitness,
-};
-use common::whitelist;
+use common::{nonce, whitelist};
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, symbol_short, Address, BytesN, Env,
     String, Symbol, Vec,
 };
+// use verifier::ProofValidationError;
 
 const ADMIN: Symbol = symbol_short!("ADMIN");
 const PENDING_ADMIN: Symbol = symbol_short!("PEND_ADM");
 const RATE_CFG: Symbol = symbol_short!("RATECFG");
 const RATE_TRACK: Symbol = symbol_short!("RLTRK");
-
 
 /// Maximum number of public inputs accepted per proof verification.
 const MAX_PUBLIC_INPUTS: u32 = 16;
@@ -68,6 +63,9 @@ pub struct AccessRequest {
     pub proof: Proof,
     /// Public inputs associated with the proof.
     pub public_inputs: Vec<BytesN<32>>,
+    /// Strictly-monotonic per-sender nonce for replay protection.
+    /// Must equal the value currently stored for `user`; incremented on success.
+    pub nonce: u64,
 }
 
 /// Contract errors for the ZK verifier.
@@ -91,6 +89,8 @@ pub enum ContractError {
     ZeroedPublicInput = 10,
     /// Cross-contract proof deserialization produced structurally invalid data.
     MalformedProofData = 11,
+    /// The provided nonce does not match the expected value (replay or out-of-order).
+    InvalidNonce = 12,
     /// The contract is paused and cannot process verification requests.
     Paused = 12,
     /// Invalid authentication level supplied to the verifier.
@@ -157,6 +157,12 @@ fn validate_request(request: &AccessRequest) -> Result<(), ContractError> {
         return Err(ContractError::DegenerateProof);
     }
 
+    for pi in request.public_inputs.iter() {
+        if is_all_zeros(&pi) {
+            return Err(ContractError::ZeroedPublicInput);
+        }
+    }
+
     Ok(())
 }
 
@@ -189,26 +195,26 @@ impl ZkVerifierContract {
         env.storage().instance().set(&ADMIN, &admin);
     }
 
-    fn emit_access_violation(env: &Env, caller: &Address, action: &str, required_permission: &str) {
-        events::publish_access_violation(
-            env,
-            caller.clone(),
-            String::from_str(env, action),
-            String::from_str(env, required_permission),
-        );
+    /// Store the Groth16 verification key used by `verify_access`.
+    ///
+    /// Only the admin may call this.  The key can be updated at any time
+    /// (e.g. after a trusted-setup ceremony rotation).
+    pub fn set_verification_key(
+        env: Env,
+        caller: Address,
+        vk: VerificationKey,
+    ) -> Result<(), ContractError> {
+        Self::require_admin(&env, &caller)?;
+        env.storage().instance().set(&VK, &vk);
+        Ok(())
     }
 
-    fn unauthorized<T>(
-        env: &Env,
-        caller: &Address,
-        action: &str,
-        required_permission: &str,
-    ) -> Result<T, ContractError> {
-        Self::emit_access_violation(env, caller, action, required_permission);
-        Err(ContractError::Unauthorized)
+    /// Retrieve the current verification key, if one has been set.
+    pub fn get_verification_key(env: Env) -> Option<VerificationKey> {
+        env.storage().instance().get(&VK)
     }
 
-    fn require_admin(env: &Env, caller: &Address, action: &str) -> Result<(), ContractError> {
+    fn require_admin(env: &Env, caller: &Address) -> Result<(), ContractError> {
         caller.require_auth();
 
         let admin: Address = match env.storage().instance().get(&ADMIN) {
@@ -369,25 +375,9 @@ impl ZkVerifierContract {
         whitelist::is_whitelisted(&env, &user)
     }
 
-    // ── Pause management ──────────────────────────────────────────────────
-
-    /// Pause all state-mutating operations. Only the admin can call this.
-    pub fn pause(env: Env, caller: Address) -> Result<(), ContractError> {
-        Self::require_admin(&env, &caller, "pause")?;
-        common::pausable::pause(&env, &caller);
-        Ok(())
-    }
-
-    /// Resume all state-mutating operations. Only the admin can call this.
-    pub fn unpause(env: Env, caller: Address) -> Result<(), ContractError> {
-        Self::require_admin(&env, &caller, "unpause")?;
-        common::pausable::unpause(&env, &caller);
-        Ok(())
-    }
-
-    /// Returns whether the contract is currently paused.
-    pub fn is_paused(env: Env) -> bool {
-        common::pausable::is_paused(&env)
+    pub fn get_nonce(env: Env, user: Address) -> u64 {
+        let key = (symbol_short!("NONCE"), user);
+        env.storage().persistent().get(&key).unwrap_or(0u64)
     }
 
     fn check_and_update_rate_limit(env: &Env, user: &Address) -> Result<(), ContractError> {
@@ -423,6 +413,23 @@ impl ZkVerifierContract {
         Ok(())
     }
 
+    fn validate_and_increment_nonce(
+        env: &Env,
+        user: &Address,
+        provided_nonce: u64,
+    ) -> Result<(), ContractError> {
+        let key = (symbol_short!("NONCE"), user.clone());
+        let current = env.storage().persistent().get::<_, u64>(&key).unwrap_or(0);
+
+        if provided_nonce != current {
+            return Err(ContractError::InvalidNonce);
+        }
+
+        // Increment nonce and persist
+        env.storage().persistent().set(&key, &(current + 1));
+        Ok(())
+    }
+
     /// Verifies a ZK proof for resource access.
     ///
     /// This is the primary entry point for users to gain access to protected resources.
@@ -446,6 +453,16 @@ impl ZkVerifierContract {
                 err,
             );
             err
+        })?;
+
+        Self::validate_and_increment_nonce(&env, &request.user, request.nonce).map_err(|_| {
+            events::publish_access_rejected(
+                &env,
+                request.user.clone(),
+                request.resource_id.clone(),
+                ContractError::InvalidNonce,
+            );
+            ContractError::InvalidNonce
         })?;
 
         if !whitelist::check_whitelist_access(&env, &request.user) {
@@ -521,6 +538,16 @@ impl ZkVerifierContract {
         AuditTrail::get_record(&env, user, resource_id)
     }
 
+    /// Verifies access for a delegated computation.
+    /// This allows off-chain executors to verify proofs on behalf of users.
+    pub fn verify_delegated_access(
+        env: Env,
+        executor: Address,
+        request: AccessRequest,
+    ) -> Result<bool, ContractError> {
+        executor.require_auth();
+        // Additional checks for authorized executors can be added here
+        Self::verify_access(env, request)
     /// Verifies the integrity of the audit chain for a given user and resource.
     ///
     /// Returns `true` if all hash links are valid, or if the chain is empty.
