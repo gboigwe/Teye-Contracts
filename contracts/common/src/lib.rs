@@ -41,6 +41,8 @@ pub mod risk_engine;
 pub mod vector_clock;
 pub mod whitelist;
 
+pub mod credential_types;
+
 pub use admin_tiers::*;
 pub use concurrency::*;
 #[cfg(feature = "std")]
@@ -57,6 +59,7 @@ pub use session::*;
 pub use risk_engine::*;
 pub use vector_clock::*;
 pub use whitelist::*;
+pub use credential_types::*;
 
 // ── Shared error enum ────────────────────────────────────────────────────────
 
