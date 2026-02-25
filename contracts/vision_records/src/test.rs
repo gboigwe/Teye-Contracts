@@ -2,7 +2,9 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::arithmetic_side_effects
+    clippy::arithmetic_side_effects,
+    unused_imports,
+    unused_variables
 )]
 
 use super::*;

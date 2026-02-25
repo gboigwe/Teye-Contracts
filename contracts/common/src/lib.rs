@@ -9,6 +9,8 @@
 //! above, ensuring no collisions with the common set.
 
 #![cfg_attr(not(feature = "std"), no_std)]
+#![allow(clippy::arithmetic_side_effects)]
+#![cfg_attr(test, allow(clippy::expect_used, clippy::unwrap_used))]
 
 use soroban_sdk::contracterror;
 

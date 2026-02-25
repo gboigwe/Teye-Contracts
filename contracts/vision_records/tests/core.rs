@@ -460,7 +460,9 @@ fn test_encrypt_decrypt_roundtrip() {
 
     let plaintext = "e3b0c44298fc1c149afbf4c8996fb924";
     let ciphertext = km.encrypt(Some("dkey1"), plaintext);
-    let decrypted = km.decrypt(Some("dkey1"), &ciphertext).expect("decrypt failed");
+    let decrypted = km
+        .decrypt(Some("dkey1"), &ciphertext)
+        .expect("decrypt failed");
 
     assert_eq!(decrypted, plaintext);
 }

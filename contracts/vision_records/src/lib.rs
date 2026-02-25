@@ -88,6 +88,34 @@ fn extend_ttl_record_access_key(env: &Env, key: &(Symbol, u64, Address)) {
         .extend_ttl(key, TTL_THRESHOLD, TTL_EXTEND_TO);
 }
 
+fn rate_limit_action_hash(
+    env: &Env,
+    max_requests_per_window: u64,
+    window_duration_seconds: u64,
+) -> BytesN<32> {
+    let mut payload = Bytes::new(env);
+    payload.append(&Bytes::from_slice(env, b"SET_RATE"));
+    payload.append(&Bytes::from_slice(
+        env,
+        &max_requests_per_window.to_be_bytes(),
+    ));
+    payload.append(&Bytes::from_slice(
+        env,
+        &window_duration_seconds.to_be_bytes(),
+    ));
+    env.crypto().sha256(&payload).into()
+}
+
+fn encryption_key_action_hash(env: &Env, version: &String, key: &String) -> BytesN<32> {
+    let mut payload = Bytes::new(env);
+    payload.append(&Bytes::from_slice(env, b"SET_ENC"));
+    let version_std = version.to_string();
+    let key_std = key.to_string();
+    payload.append(&Bytes::from_slice(env, version_std.as_bytes()));
+    payload.append(&Bytes::from_slice(env, key_std.as_bytes()));
+    env.crypto().sha256(&payload).into()
+}
+
 fn consent_key(patient: &Address, grantee: &Address) -> (Symbol, Address, Address) {
     (symbol_short!("CONSENT"), patient.clone(), grantee.clone())
 }
@@ -520,6 +548,45 @@ impl VisionRecordsContract {
             );
         }
 
+        let auth_session = session::start_or_refresh_session(
+            &env,
+            &caller,
+            progressive_auth::AuthLevel::Level3,
+            3_600,
+            900,
+        );
+        let expected_data_hash =
+            rate_limit_action_hash(&env, max_requests_per_window, window_duration_seconds);
+        let risk = risk_engine::evaluate_risk(
+            &env,
+            &risk_engine::OperationRiskInput {
+                actor: caller.clone(),
+                operation: symbol_short!("SET_RATE"),
+                action: risk_engine::ActionType::AdminChange,
+                sensitivity: risk_engine::DataSensitivity::Sensitive,
+                context: risk_engine::RiskContext {
+                    off_hours: false,
+                    unusual_location: false,
+                    unusual_frequency: false,
+                    recent_auth_failures: 0,
+                    emergency_signal: false,
+                },
+            },
+            None,
+        );
+        progressive_auth::enforce_for_risk(
+            &env,
+            &caller,
+            risk.final_score,
+            auth_session.issued_at,
+            Some(proposal_id),
+            symbol_short!("SET_RATE"),
+            expected_data_hash,
+            false,
+            &progressive_auth::default_policy(),
+        )
+        .map_err(|_| ContractError::Unauthorized)?;
+
         env.storage().instance().set(
             &RATE_CFG,
             &(max_requests_per_window, window_duration_seconds),
@@ -548,6 +615,81 @@ impl VisionRecordsContract {
                 "set_encryption_key",
                 "admin_or_system_admin",
             );
+        }
+
+        let auth_session = session::start_or_refresh_session(
+            &env,
+            &caller,
+            progressive_auth::AuthLevel::Level4,
+            3_600,
+            900,
+        );
+        let expected_data_hash = encryption_key_action_hash(&env, &version, &key);
+        let policy = progressive_auth::default_policy();
+        let baseline = risk_engine::evaluate_risk(
+            &env,
+            &risk_engine::OperationRiskInput {
+                actor: caller.clone(),
+                operation: symbol_short!("SET_ENC"),
+                action: risk_engine::ActionType::AdminChange,
+                sensitivity: risk_engine::DataSensitivity::Sensitive,
+                context: risk_engine::RiskContext {
+                    off_hours: false,
+                    unusual_location: false,
+                    unusual_frequency: false,
+                    recent_auth_failures: 0,
+                    emergency_signal: false,
+                },
+            },
+            None,
+        );
+        let baseline_level = progressive_auth::enforce_for_risk(
+            &env,
+            &caller,
+            baseline.final_score,
+            auth_session.issued_at,
+            Some(proposal_id),
+            symbol_short!("SET_ENC"),
+            expected_data_hash.clone(),
+            false,
+            &policy,
+        )
+        .map_err(|_| ContractError::Unauthorized)?;
+
+        // Mid-operation step-up: large key material forces higher sensitivity.
+        if key.len() > 128 {
+            let elevated = risk_engine::evaluate_risk(
+                &env,
+                &risk_engine::OperationRiskInput {
+                    actor: caller.clone(),
+                    operation: symbol_short!("SET_ENC"),
+                    action: risk_engine::ActionType::AdminChange,
+                    sensitivity: risk_engine::DataSensitivity::Restricted,
+                    context: risk_engine::RiskContext {
+                        off_hours: false,
+                        unusual_location: false,
+                        unusual_frequency: true,
+                        recent_auth_failures: 0,
+                        emergency_signal: false,
+                    },
+                },
+                None,
+            );
+            let elevated_level = progressive_auth::level_for_score(elevated.final_score, &policy);
+            if progressive_auth::needs_step_up(baseline_level, elevated_level.clone()) {
+                progressive_auth::enforce_level(
+                    &env,
+                    &caller,
+                    elevated_level,
+                    auth_session.issued_at,
+                    Some(proposal_id),
+                    symbol_short!("SET_ENC"),
+                    expected_data_hash,
+                    false,
+                    &policy,
+                )
+                .map_err(|_| ContractError::Unauthorized)?;
+            }
         }
 
         // Persist the key hex string under (ENC_KEY, version)
@@ -1332,10 +1474,25 @@ impl VisionRecordsContract {
 
         if let Some(grant) = env.storage().persistent().get::<_, AccessGrant>(&key) {
             if grant.expires_at > env.ledger().timestamp() {
-                // Check if ABAC policies also allow this access
-                let abac_allowed =
-                    evaluate_access_policies(&env, &grantee, None, Some(patient.clone()));
-                if abac_allowed {
+                // ABAC is optional here: if no policies are configured, valid
+                // consent+grant should still provide access.
+                let default_policy_ids = [
+                    String::from_str(&env, "default_medical_access"),
+                    String::from_str(&env, "emergency_access"),
+                    String::from_str(&env, "research_access"),
+                ];
+                let mut has_any_policy = false;
+                for policy_id in default_policy_ids {
+                    let policy_key = rbac::access_policy_key(&policy_id);
+                    if env.storage().persistent().has(&policy_key) {
+                        has_any_policy = true;
+                        break;
+                    }
+                }
+
+                if !has_any_policy
+                    || evaluate_access_policies(&env, &grantee, None, Some(patient.clone()))
+                {
                     return grant.level;
                 }
             }

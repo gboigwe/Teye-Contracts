@@ -1,4 +1,5 @@
-#![allow(dead_code, clippy::manual_inspect)]
+#![allow(dead_code, clippy::manual_inspect, clippy::arithmetic_side_effects)]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 //! # ZK Verifier Module
 //!
 //! This module provides a Zero-Knowledge (ZK) proof verification system for the Soroban ecosystem.
@@ -141,6 +142,23 @@ fn validate_request(request: &AccessRequest) -> Result<(), ContractError> {
         return Err(ContractError::DegenerateProof);
     }
 
+    Ok(())
+}
+
+fn validate_auth_level(level: u32) -> Result<(), ContractError> {
+    if !(1..=4).contains(&level) {
+        return Err(ContractError::InvalidAuthLevel);
+    }
+    Ok(())
+}
+
+fn validate_level4_attributes(request: &AccessRequest) -> Result<(), ContractError> {
+    // Require at least two public inputs at level 4:
+    // - primary operation binding
+    // - privacy-preserving attribute commitment
+    if request.public_inputs.len() < 2 {
+        return Err(ContractError::ProofRequiredForAuthLevel);
+    }
     Ok(())
 }
 
@@ -465,6 +483,25 @@ impl ZkVerifierContract {
             );
         }
         Ok(is_valid)
+    }
+
+    /// Verifies access with auth-level-aware ZK requirements.
+    ///
+    /// Level mapping:
+    /// - 1/2/3: standard proof verification path
+    /// - 4: requires additional attribute proof material in public inputs
+    pub fn verify_auth_level_access(
+        env: Env,
+        request: AccessRequest,
+        required_auth_level: u32,
+    ) -> Result<bool, ContractError> {
+        validate_auth_level(required_auth_level)?;
+
+        if required_auth_level >= 4 {
+            validate_level4_attributes(&request)?;
+        }
+
+        Self::verify_access(env, request)
     }
 
     /// Retrieves an audit record for a specific user and resource.

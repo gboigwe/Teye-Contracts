@@ -1,4 +1,9 @@
 #![no_std]
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::arithmetic_side_effects
+)]
 
 pub mod ballot;
 pub mod merkle;

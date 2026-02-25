@@ -1,4 +1,5 @@
 #![cfg(test)]
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 
 use soroban_sdk::{testutils::Address as _, Address, BytesN, Env, Vec};
 use zk_verifier::Proof;

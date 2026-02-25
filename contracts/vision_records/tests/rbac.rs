@@ -253,27 +253,28 @@ fn test_scoped_delegation_only_grants_specified_permissions() {
     let mut perms = Vec::new(&ctx.env);
     perms.push_back(Permission::ManageAccess);
     let expires_at = ctx.env.ledger().timestamp() + 86400;
-    ctx.client.delegate_permissions(&patient, &delegatee, &perms, &expires_at);
+    ctx.client
+        .delegate_permissions(&patient, &delegatee, &perms, &expires_at);
 
     // Delegatee can grant access (ManageAccess) on behalf of patient
     ctx.client
         .grant_access(&delegatee, &patient, &doctor, &AccessLevel::Read, &3600);
-    assert_eq!(ctx.client.check_access(&patient, &doctor), AccessLevel::Read);
+    assert_eq!(
+        ctx.client.check_access(&patient, &doctor),
+        AccessLevel::Read
+    );
 
     // Same patient delegates only ReadAnyRecord to another delegatee — that one must NOT grant access
     let delegatee2 = create_test_user(&ctx, Role::Patient, "Delegatee2");
     let mut perms_read_only = Vec::new(&ctx.env);
     perms_read_only.push_back(Permission::ReadAnyRecord);
-    ctx.client.delegate_permissions(&patient, &delegatee2, &perms_read_only, &expires_at);
+    ctx.client
+        .delegate_permissions(&patient, &delegatee2, &perms_read_only, &expires_at);
 
     let doctor2 = create_test_user(&ctx, Role::Optometrist, "Doctor2");
-    let result = ctx.client.try_grant_access(
-        &delegatee2,
-        &patient,
-        &doctor2,
-        &AccessLevel::Read,
-        &3600,
-    );
+    let result =
+        ctx.client
+            .try_grant_access(&delegatee2, &patient, &doctor2, &AccessLevel::Read, &3600);
     assert!(result.is_err());
 }
 
@@ -308,18 +309,23 @@ fn test_scoped_delegation_expiry() {
     let mut perms = Vec::new(&ctx.env);
     perms.push_back(Permission::ManageAccess);
     let expire_at = 100u64;
-    ctx.client.delegate_permissions(&patient, &delegatee, &perms, &expire_at);
+    ctx.client
+        .delegate_permissions(&patient, &delegatee, &perms, &expire_at);
 
     // At timestamp 100 or later, scoped delegation is expired
     let result =
-        ctx.client.try_grant_access(&delegatee, &patient, &doctor, &AccessLevel::Read, &3600);
+        ctx.client
+            .try_grant_access(&delegatee, &patient, &doctor, &AccessLevel::Read, &3600);
     assert!(result.is_err());
 
     // Before expiry it works
     ctx.env.ledger().set_timestamp(99);
     ctx.client
         .grant_access(&delegatee, &patient, &doctor, &AccessLevel::Read, &3600);
-    assert_eq!(ctx.client.check_access(&patient, &doctor), AccessLevel::Read);
+    assert_eq!(
+        ctx.client.check_access(&patient, &doctor),
+        AccessLevel::Read
+    );
 }
 
 #[test]

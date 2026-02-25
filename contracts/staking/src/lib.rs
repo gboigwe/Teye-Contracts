@@ -1,4 +1,5 @@
 #![no_std]
+#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod events;
 pub mod rewards;
@@ -652,6 +653,21 @@ impl StakingContract {
             return Err(ContractError::InvalidInput);
         }
 
+        // If multisig is configured, require an executable proposal and consume it.
+        if !multisig::is_legacy_admin_allowed(&env) {
+            if proposal_id == 0 {
+                return Err(ContractError::MultisigRequired);
+            }
+            let proposal =
+                multisig::get_proposal(&env, proposal_id).ok_or(ContractError::MultisigRequired)?;
+            if proposal.action != symbol_short!("RWD_RATE")
+                || !multisig::is_executable(&env, proposal_id)
+            {
+                return Err(ContractError::MultisigRequired);
+            }
+            multisig::mark_executed(&env, proposal_id).map_err(|_| ContractError::MultisigError)?;
+        }
+
         let delay: u64 = env.storage().instance().get(&RATE_DELAY).unwrap_or(0);
 
         if delay == 0 {
@@ -727,6 +743,20 @@ impl StakingContract {
         Self::require_initialized(&env)?;
         caller.require_auth();
         Self::require_admin_tier(&env, &caller, &AdminTier::Contract, "set_lock_period")?;
+
+        if !multisig::is_legacy_admin_allowed(&env) {
+            if proposal_id == 0 {
+                return Err(ContractError::MultisigRequired);
+            }
+            let proposal =
+                multisig::get_proposal(&env, proposal_id).ok_or(ContractError::MultisigRequired)?;
+            if proposal.action != symbol_short!("SET_LOCK")
+                || !multisig::is_executable(&env, proposal_id)
+            {
+                return Err(ContractError::MultisigRequired);
+            }
+            multisig::mark_executed(&env, proposal_id).map_err(|_| ContractError::MultisigError)?;
+        }
 
         env.storage().instance().set(&LOCK_PERIOD, &new_period);
 
